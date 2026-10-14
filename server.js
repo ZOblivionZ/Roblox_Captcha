@@ -7,7 +7,7 @@ const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY";
 const LOOTLABS_API_TOKEN = "41226ca865083af846a334acd8959f8e5f63dd1aa98e8f5713764fd4605b2e1e";
 
 // Сюда вставь ссылку на вебхук своего Discord-канала (оставь пустым или закомментируй, если вебхук не нужен)
-const DISCORD_WEBHOOK_URL = ""; 
+const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1559943184400908363/uSJPz52t1jgvxdhb1LKwezoLhBHSXa_dnHC20xKQQj-dWq9zWuv_-61tOZ-qSNck7mti"; 
 
 const pendingSessions = new Map(); // token -> { hwid, createdAt }
 const activeKeys = new Map();      // key -> { hwid, expiresAt }
