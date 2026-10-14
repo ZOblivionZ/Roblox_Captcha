@@ -6,6 +6,9 @@ const PORT = process.env.PORT || 3000;
 const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY";
 const LOOTLABS_API_TOKEN = "41226ca865083af846a334acd8959f8e5f63dd1aa98e8f5713764fd4605b2e1e";
 
+// Сюда вставь ссылку на вебхук своего Discord-канала (оставь пустым или закомментируй, если вебхук не нужен)
+const DISCORD_WEBHOOK_URL = ""; 
+
 const pendingSessions = new Map(); // token -> { hwid, createdAt }
 const activeKeys = new Map();      // key -> { hwid, expiresAt }
 
@@ -21,6 +24,31 @@ function generateKeyForHwid(hwid) {
     const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 часа
     activeKeys.set(key, { hwid, expiresAt });
     return { key, expiresAt };
+}
+
+// Отправка логов в Discord
+async function sendDiscordLog(key, hwid, ip) {
+    if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL === "") return;
+    try {
+        await fetch(DISCORD_WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                embeds: [{
+                    title: "🎉 Новый ключ выдан!",
+                    color: 16763904, // Янтарно-желтый цвет в HEX
+                    fields: [
+                        { name: "🔑 Ключ", value: `\`${key}\``, inline: false },
+                        { name: "💻 HWID пользователя", value: `\`${hwid}\``, inline: false },
+                        { name: "🌐 IP-адрес", value: `\`${ip}\``, inline: true }
+                    ],
+                    timestamp: new Date().toISOString()
+                }]
+            })
+        });
+    } catch (err) {
+        console.error("Ошибка отправки вебхука в Discord:", err);
+    }
 }
 
 // Очистка старых сессий каждые 10 минут
@@ -87,7 +115,6 @@ app.get('/go-lootlabs', async (req, res) => {
         });
 
         const data = await response.json();
-        console.log("Ответ от LootLabs:", data);
 
         let lootUrl = null;
         if (data && data.message) {
@@ -114,7 +141,7 @@ app.get('/go-lootlabs', async (req, res) => {
 });
 
 // 3. Верификация и выдача ключа
-app.get('/verify', (req, res) => {
+app.get('/verify', async (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
 
@@ -132,6 +159,13 @@ app.get('/verify', (req, res) => {
 
     pendingSessions.delete(token);
     const keyObj = generateKeyForHwid(session.hwid);
+
+    // Получаем IP пользователя для логирования
+    const userIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "Unknown";
+    console.log(`[УСПЕХ] Выдан ключ: ${keyObj.key} для HWID: ${session.hwid} (IP: ${userIp})`);
+
+    // Отправляем уведомление в Discord
+    await sendDiscordLog(keyObj.key, session.hwid, userIp);
 
     res.send(renderHTML({
         title: "Ваш ключ готов • GRANDPA_POLUTION",
