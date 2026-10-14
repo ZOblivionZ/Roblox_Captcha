@@ -3,13 +3,14 @@ const crypto = require('crypto');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY"; // Секретная соль для генерации ключей
+const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY"; // Секретная соль для ключей
+const LOOTLABS_API_TOKEN = "41226ca865083af846a334acd8959f8e5f63dd1aa98e8f5713764fd4605b2e1e";
 
-// Временные хранилища в памяти (в продакшене можно заменить на Redis/SQLite)
-const pendingSessions = new Map(); // token -> { hwid, createdAt, step }
+// Хранилища в памяти
+const pendingSessions = new Map(); // token -> { hwid, createdAt }
 const activeKeys = new Map();      // key -> { hwid, expiresAt }
 
-// Генерация ключа, привязанного к HWID, на 24 часа
+// Генерация ключа (на 24 часа)
 function generateKeyForHwid(hwid) {
     const randomPart = crypto.randomBytes(4).toString('hex').toUpperCase();
     const hash = crypto.createHmac('sha256', SECRET_SALT)
@@ -25,7 +26,7 @@ function generateKeyForHwid(hwid) {
     return { key, expiresAt };
 }
 
-// Очистка просроченных ключей и сессий каждые 10 минут
+// Очистка старых данных каждые 10 минут
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of activeKeys.entries()) {
@@ -37,7 +38,7 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 // ============================================================================
-// 1. СТРАНИЦА СТАРТА (ЧЕКПОИНТ 1)
+// 1. СТРАНИЦА СТАРТА
 // ============================================================================
 app.get('/start', (req, res) => {
     const hwid = req.query.hwid || 'UNKNOWN_HWID';
@@ -45,8 +46,7 @@ app.get('/start', (req, res) => {
 
     pendingSessions.set(sessionToken, {
         hwid: hwid,
-        createdAt: Date.now(),
-        completed: false
+        createdAt: Date.now()
     });
 
     res.send(renderHTML({
@@ -59,9 +59,9 @@ app.get('/start', (req, res) => {
 });
 
 // ============================================================================
-// 2. ПЕРЕНАПРАВЛЕНИЕ НА LOOTLABS / LINKVERTISE
+// 2. ГЕНЕРАЦИЯ ССЫЛКИ ЧЕРЕЗ LOOTLABS API
 // ============================================================================
-app.get('/go-lootlabs', (req, res) => {
+app.get('/go-lootlabs', async (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
 
@@ -69,47 +69,48 @@ app.get('/go-lootlabs', (req, res) => {
         return res.status(403).send("Сессия устарела или недействительна. Вернитесь в игру и скопируйте ссылку заново.");
     }
 
-    // Обновляем время начала прохождения
     session.createdAt = Date.now();
-
-    // Целевая ссылка, куда LootLabs вернёт пользователя после прохождения рекламы:
     const callbackUrl = `${req.protocol}://${req.get('host')}/verify?token=${token}`;
 
-    /* 
-       КАК ПОДКЛЮЧИТЬ РЕАЛЬНЫЙ LOOTLABS:
-       В панели LootLabs возьми свой API-токен или используй их Dynamic Link API,
-       передав callbackUrl как destination.
-       Для теста ниже стоит редирект на /verify (не забудь подождать 10 сек при тесте или уменьшить анти-байпас таймер ниже).
-    */
-    const lootlabsUrl = callbackUrl; // Замени на свою ссылку LootLabs с динамическим редиректом на callbackUrl
+    try {
+        const apiUri = `https://creators.lootlabs.gg/api/public/content_locker?api_token=${LOOTLABS_API_TOKEN}&title=${encodeURIComponent("GRANDPA_POLUTION Key")}&url=${encodeURIComponent(callbackUrl)}&tier_id=2&number_of_tasks=2&theme=1`;
+        
+        const response = await fetch(apiUri, { method: 'GET' });
+        const data = await response.json();
 
-    res.redirect(lootlabsUrl);
+        if (data && data.message && data.message.loot_url) {
+            return res.redirect(data.message.loot_url);
+        } else {
+            console.error("LootLabs API Error:", data);
+            return res.status(500).send("Ошибка связи с рекламной сетью LootLabs. Попробуйте позже.");
+        }
+    } catch (err) {
+        console.error("Fetch error:", err);
+        return res.status(500).send("Сбой соединения с сервером генерации рекламы.");
+    }
 });
 
 // ============================================================================
-// 3. ПРОВЕРКА ПРОХОЖДЕНИЯ И ВЫДАЧА КЛЮЧА (С ЭФФЕКТОМ XENO)
+// 3. ПРОВЕРКА И ВЫДАЧА КЛЮЧА
 // ============================================================================
 app.get('/verify', (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
 
-    // Если токен уже использован или человек просто скопировал ссылку — блокируем!
     if (!session) {
-        return res.status(403).send(renderErrorHTML("Доступ запрещён! Одноразовая ссылка уже была использована или устарела."));
+        return res.status(403).send(renderErrorHTML("Доступ запрещён! Ссылка уже была использована или устарела."));
     }
 
-    // Защита от авто-байпасеров (проверяем, что прошло хотя бы 10 секунд на рекламе)
+    // Защита от байпасеров (минимальное время прохождения рекламы — 8 секунд)
     const elapsedSeconds = (Date.now() - session.createdAt) / 1000;
-    const MIN_SECONDS = 0; // Поставь 12, когда подключишь реальную ссылку LootLabs!
+    const MIN_SECONDS = 8; 
 
     if (elapsedSeconds < MIN_SECONDS) {
         pendingSessions.delete(token);
-        return res.status(403).send(renderErrorHTML(`Обнаружен обход рекламы (Bypass)! Вы прошли чекпоинт за ${elapsedSeconds.toFixed(1)} сек.`));
+        return res.status(403).send(renderErrorHTML(`Обнаружен обход рекламы (Bypass)! Вы попытались получить ключ слишком быстро (${elapsedSeconds.toFixed(1)} сек.).`));
     }
 
-    // Сразу удаляем токен, чтобы при обновлении страницы (F5) или копировании ссылки она больше не работала
     pendingSessions.delete(token);
-
     const keyObj = generateKeyForHwid(session.hwid);
 
     res.send(renderHTML({
@@ -122,7 +123,7 @@ app.get('/verify', (req, res) => {
 });
 
 // ============================================================================
-// 4. API ПРОВЕРКИ КЛЮЧА ИЗ ROBLOX-СКРИПТА
+// 4. API ПРОВЕРКИ КЛЮЧА ИЗ LUA-СКРИПТА
 // ============================================================================
 app.get('/api/check', (req, res) => {
     const { key, hwid } = req.query;
@@ -141,7 +142,7 @@ app.get('/api/check', (req, res) => {
     }
 
     if (record.hwid !== hwid) {
-        return res.json({ valid: false, message: "Этот ключ привязан к другому устройству (HWID)!" });
+        return res.json({ valid: false, message: "Этот ключ привязан к другому устройству!" });
     }
 
     const hoursLeft = ((record.expiresAt - Date.now()) / (1000 * 60 * 60)).toFixed(1);
@@ -149,7 +150,7 @@ app.get('/api/check', (req, res) => {
 });
 
 // ============================================================================
-// ШАБЛОН САЙТА С ДИНАМИЧЕСКОЙ ССЫЛКОЙ XENO
+// HTML ШАБЛОН С ЭФФЕКТОМ XENO
 // ============================================================================
 function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
     return `
@@ -187,7 +188,6 @@ function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
         </div>
 
         ${keyData ? `
-            <!-- БЛОК ВЫДАЧИ ГОТОВОГО КЛЮЧА -->
             <div class="space-y-4">
                 <div class="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-center">
                     <div class="text-xs text-emerald-400 mb-1 font-semibold uppercase tracking-wider">Ваш персональный ключ (24 часа):</div>
@@ -196,13 +196,12 @@ function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
                 <button onclick="copyKey()" id="copyBtn" class="w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] text-black font-bold py-3 rounded-xl shadow-lg shadow-amber-500/20 transition">
                     📋 Скопировать ключ
                 </button>
-                <p class="text-[11px] text-center text-slate-500">Вставьте этот ключ в окно скрипта в Roblox. Ссылка в адресной строке зашифрована в реальном времени.</p>
+                <p class="text-[11px] text-center text-slate-500">Вставьте этот ключ в окно скрипта в Roblox.</p>
             </div>
         ` : `
-            <!-- БЛОК ПРОХОЖДЕНИЯ ЧЕКПОИНТА -->
             <div class="space-y-4">
                 <p class="text-xs text-slate-300 leading-relaxed">
-                    Для поддержки разработчика и получения бесплатного ключа на 24 часа пройдите короткую проверку через <b>LootLabs</b>.
+                    Для поддержки разработчика и получения бесплатного ключа на 24 часа пройдите проверку через <b>LootLabs</b>.
                 </p>
                 <a href="${buttonUrl}" class="block text-center w-full bg-amber-500 hover:bg-amber-400 active:scale-[0.99] text-black font-bold py-3 rounded-xl shadow-lg shadow-amber-500/20 transition">
                     🚀 Получить ключ через LootLabs
@@ -220,10 +219,7 @@ function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
             setTimeout(() => btn.innerText = "📋 Скопировать ключ", 2000);
         }
 
-        // ====================================================================
-        // ЭФФЕКТ XENO: БЕСКОНЕЧНАЯ СМЕНА URL В АДРЕСНОЙ СТРОКЕ БРАУЗЕРА
-        // Не даёт скопировать прямую ссылку на генератор и сбивает байпасеры
-        // ====================================================================
+        // Эффект Xeno (бесконечная смена URL)
         const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~";
         function randomHash(len) {
             let out = "";
@@ -234,9 +230,8 @@ function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
         setInterval(() => {
             const dynamicPath = "/session/" + randomHash(32) + "?sig=" + randomHash(16);
             window.history.replaceState(null, "", dynamicPath);
-        }, 75); // Меняет ссылку каждые 75 миллисекунд!
+        }, 75);
 
-        // Запрет правой кнопки мыши и F12
         document.addEventListener('contextmenu', e => e.preventDefault());
     </script>
 </body>
@@ -252,4 +247,4 @@ function renderErrorHTML(msg) {
     </body>`;
 }
 
-app.listen(PORT, () => console.log(`Key System Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Key System Server running on port ${PORT}`));
