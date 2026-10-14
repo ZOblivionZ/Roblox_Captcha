@@ -3,14 +3,12 @@ const crypto = require('crypto');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY"; // Секретная соль для ключей
+const SECRET_SALT = "GRANDPA_SUPER_SECRET_2026_KEY";
 const LOOTLABS_API_TOKEN = "41226ca865083af846a334acd8959f8e5f63dd1aa98e8f5713764fd4605b2e1e";
 
-// Хранилища в памяти
 const pendingSessions = new Map(); // token -> { hwid, createdAt }
 const activeKeys = new Map();      // key -> { hwid, expiresAt }
 
-// Генерация ключа (на 24 часа)
 function generateKeyForHwid(hwid) {
     const randomPart = crypto.randomBytes(4).toString('hex').toUpperCase();
     const hash = crypto.createHmac('sha256', SECRET_SALT)
@@ -21,12 +19,11 @@ function generateKeyForHwid(hwid) {
     
     const key = `GP-${randomPart}-${hash}`;
     const expiresAt = Date.now() + (24 * 60 * 60 * 1000); // 24 часа
-    
     activeKeys.set(key, { hwid, expiresAt });
     return { key, expiresAt };
 }
 
-// Очистка старых данных каждые 10 минут
+// Очистка старых сессий каждые 10 минут
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of activeKeys.entries()) {
@@ -37,9 +34,7 @@ setInterval(() => {
     }
 }, 10 * 60 * 1000);
 
-// ============================================================================
-// 1. СТРАНИЦА СТАРТА
-// ============================================================================
+// 1. Старт генерации ключа
 app.get('/start', (req, res) => {
     const hwid = req.query.hwid || 'UNKNOWN_HWID';
     const sessionToken = crypto.randomBytes(16).toString('hex');
@@ -58,9 +53,7 @@ app.get('/start', (req, res) => {
     }));
 });
 
-// ============================================================================
-// 2. ГЕНЕРАЦИЯ ССЫЛКИ ЧЕРЕЗ LOOTLABS API
-// ============================================================================
+// 2. Генерация ссылки через официальный LootLabs API (POST-запрос по документации)
 app.get('/go-lootlabs', async (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
@@ -73,26 +66,41 @@ app.get('/go-lootlabs', async (req, res) => {
     const callbackUrl = `${req.protocol}://${req.get('host')}/verify?token=${token}`;
 
     try {
-        const apiUri = `https://creators.lootlabs.gg/api/public/content_locker?api_token=${LOOTLABS_API_TOKEN}&title=${encodeURIComponent("GRANDPA_POLUTION Key")}&url=${encodeURIComponent(callbackUrl)}&tier_id=2&number_of_tasks=2&theme=1`;
+        const apiEndpoint = 'https://creators.lootlabs.gg/api/public/content_locker';
         
-        const response = await fetch(apiUri, { method: 'GET' });
+        // Тело запроса строго по официальной документации LootLabs
+        const requestData = {
+            title: "GRANDPA_POLUTION Key",
+            url: callbackUrl,
+            tier_id: 2,         // Gaming Offers & Recommendations
+            number_of_tasks: 2, // Количество рекламных задач
+            theme: 1            // Классическая тема
+        };
+
+        const response = await fetch(apiEndpoint, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${LOOTLABS_API_TOKEN}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestData)
+        });
+
         const data = await response.json();
 
-        if (data && data.message && data.message.loot_url) {
+        if (data && data.type === 'created' && data.message && data.message.loot_url) {
             return res.redirect(data.message.loot_url);
         } else {
-            console.error("LootLabs API Error:", data);
-            return res.status(500).send("Ошибка связи с рекламной сетью LootLabs. Попробуйте позже.");
+            console.error("LootLabs API Error Response:", data);
+            return res.status(500).send("Ошибка LootLabs API: " + (data.message || "Убедитесь, что профиль создателя на сайте lootlabs.gg заполнен до конца!"));
         }
     } catch (err) {
         console.error("Fetch error:", err);
-        return res.status(500).send("Сбой соединения с сервером генерации рекламы.");
+        return res.status(500).send("Сбой соединения с сервером рекламной сети LootLabs.");
     }
 });
 
-// ============================================================================
-// 3. ПРОВЕРКА И ВЫДАЧА КЛЮЧА
-// ============================================================================
+// 3. Верификация и выдача ключа
 app.get('/verify', (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
@@ -101,9 +109,8 @@ app.get('/verify', (req, res) => {
         return res.status(403).send(renderErrorHTML("Доступ запрещён! Ссылка уже была использована или устарела."));
     }
 
-    // Защита от байпасеров (минимальное время прохождения рекламы — 8 секунд)
     const elapsedSeconds = (Date.now() - session.createdAt) / 1000;
-    const MIN_SECONDS = 8; 
+    const MIN_SECONDS = 8; // Защита от байпасеров
 
     if (elapsedSeconds < MIN_SECONDS) {
         pendingSessions.delete(token);
@@ -122,9 +129,7 @@ app.get('/verify', (req, res) => {
     }));
 });
 
-// ============================================================================
-// 4. API ПРОВЕРКИ КЛЮЧА ИЗ LUA-СКРИПТА
-// ============================================================================
+// 4. API проверки ключа из Lua
 app.get('/api/check', (req, res) => {
     const { key, hwid } = req.query;
     if (!key || !hwid) {
@@ -149,9 +154,6 @@ app.get('/api/check', (req, res) => {
     return res.json({ valid: true, message: `Ключ активен! Осталось: ${hoursLeft} ч.` });
 });
 
-// ============================================================================
-// HTML ШАБЛОН С ЭФФЕКТОМ XENO
-// ============================================================================
 function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
     return `
 <!DOCTYPE html>
@@ -219,7 +221,7 @@ function renderHTML({ title, stepText, hwid, buttonUrl, keyData }) {
             setTimeout(() => btn.innerText = "📋 Скопировать ключ", 2000);
         }
 
-        // Эффект Xeno (бесконечная смена URL)
+        // Эффект Xeno (динамическая смена URL)
         const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_~";
         function randomHash(len) {
             let out = "";
