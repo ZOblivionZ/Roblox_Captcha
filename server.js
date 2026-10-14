@@ -53,7 +53,7 @@ app.get('/start', (req, res) => {
     }));
 });
 
-// 2. Генерация ссылки через официальный LootLabs API (POST-запрос по документации)
+// 2. Генерация ссылки через официальный LootLabs API
 app.get('/go-lootlabs', async (req, res) => {
     const token = req.query.token;
     const session = pendingSessions.get(token);
@@ -68,31 +68,44 @@ app.get('/go-lootlabs', async (req, res) => {
     try {
         const apiEndpoint = 'https://creators.lootlabs.gg/api/public/content_locker';
         
-        // Тело запроса строго по официальной документации LootLabs
         const requestData = {
             title: "GRANDPA_POLUTION Key",
             url: callbackUrl,
-            tier_id: 2,         // Gaming Offers & Recommendations
-            number_of_tasks: 2, // Количество рекламных задач
-            theme: 1            // Классическая тема
+            tier_id: 2,
+            number_of_tasks: 2,
+            theme: 1
         };
 
         const response = await fetch(apiEndpoint, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${LOOTLABS_API_TOKEN}`,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
             },
             body: JSON.stringify(requestData)
         });
 
         const data = await response.json();
+        console.log("Ответ от LootLabs:", data);
 
-        if (data && data.type === 'created' && data.message && data.message.loot_url) {
-            return res.redirect(data.message.loot_url);
+        let lootUrl = null;
+        if (data && data.message) {
+            if (typeof data.message === 'string') {
+                console.error("LootLabs API Error:", data.message);
+                return res.status(500).send("Ошибка LootLabs API: " + data.message);
+            } else if (Array.isArray(data.message) && data.message[0] && data.message[0].loot_url) {
+                lootUrl = data.message[0].loot_url;
+            } else if (data.message.loot_url) {
+                lootUrl = data.message.loot_url;
+            }
+        }
+
+        if (lootUrl) {
+            return res.redirect(lootUrl);
         } else {
-            console.error("LootLabs API Error Response:", data);
-            return res.status(500).send("Ошибка LootLabs API: " + (data.message || "Убедитесь, что профиль создателя на сайте lootlabs.gg заполнен до конца!"));
+            console.error("Не удалось найти loot_url в ответе:", data);
+            return res.status(500).send("Ошибка: LootLabs не вернул ссылку на рекламу.");
         }
     } catch (err) {
         console.error("Fetch error:", err);
